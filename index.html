@@ -64,6 +64,7 @@ loadRegions();
 
 let uploadBook=null,uploadRaw=[],uploadChart=null;
 const uploadMsg=(m,error=false)=>{$('uploadStatus').textContent=m;$('uploadStatus').className='notice'+(error?' error':'')};
+function blobLooksCsv(file){return /csv|text\//i.test(file.type||'')}
 function csvParse(text){const lines=[],row=[];let field='',quoted=false;for(let i=0;i<text.length;i++){const c=text[i];if(c==='"'){if(quoted&&text[i+1]==='"'){field+='"';i++}else quoted=!quoted}else if(c===','&&!quoted){row.push(field);field=''}else if((c==='\\n'||c==='\\r')&&!quoted){if(c==='\\r'&&text[i+1]==='\\n')i++;row.push(field);if(row.some(v=>String(v).trim()))lines.push([...row]);row.length=0;field=''}else field+=c}row.push(field);if(row.some(v=>String(v).trim()))lines.push(row);return lines}
 function sheetRows(rows){if(!rows.length)return [];const heads=rows[0].map((v,i)=>String(v??'').trim()||'열 '+(i+1));return rows.slice(1).filter(r=>r.some(v=>v!==''&&v!=null)).map(r=>Object.fromEntries(heads.map((h,i)=>[h,r[i]??''])))}
 function fillUploadSelect(id,headers,optional=false){const sel=$(id);sel.replaceChildren();if(optional){const o=document.createElement('option');o.value='';o.textContent='없음';sel.append(o)}for(const h of headers){const o=document.createElement('option');o.value=h;o.textContent=h;sel.append(o)}sel.disabled=false}
@@ -75,8 +76,9 @@ $('uploadSale').value=guessHeader(headers,['매매','매도가','sale','매매�
 $('uploadRent').value=guessHeader(headers,['전세','rent','jeonse']);
 $('drawUpload').disabled=false;uploadMsg(rows.length.toLocaleString()+'행을 읽었습니다. 열을 확인하고 차트 그리기를 눌러주세요.');
 }
-$('uploadFile').addEventListener('change',async()=>{const file=$('uploadFile').files[0];if(!file)return;try{uploadMsg('파일 읽는 중…');uploadBook=null;$('uploadSheet').disabled=true;const lower=file.name.toLowerCase();if(lower.endsWith('.csv')){const text=await file.text();if(window.XLSX){uploadBook=XLSX.read(text,{type:'string',raw:true});}else{setupUpload(sheetRows(csvParse(text.replace(/^\\uFEFF/,''))));$('uploadSheet').innerHTML='<option>CSV</option>';return}}else{if(!window.XLSX)throw Error('엑셀 읽기 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인하거나 CSV로 저장해 주세요.');uploadBook=XLSX.read(await file.arrayBuffer(),{type:'array',cellDates:true})}
-$('uploadSheet').replaceChildren();for(const name of uploadBook.SheetNames){const o=document.createElement('option');o.value=name;o.textContent=name;$('uploadSheet').append(o)}$('uploadSheet').disabled=uploadBook.SheetNames.length<=1;loadUploadSheet()}catch(e){uploadMsg('파일을 읽지 못했습니다: '+e.message,true);$('drawUpload').disabled=true}});
+async function loadUploadFile(file){if(!file)return;try{uploadMsg('파일 읽는 중…');uploadBook=null;$('uploadSheet').disabled=true;const lower=file.name.toLowerCase();if(lower.endsWith('.csv')||(!/\.(xlsx|xls)$/i.test(lower)&&blobLooksCsv(file))){const text=await file.text();if(window.XLSX){uploadBook=XLSX.read(text,{type:'string',raw:true});}else{setupUpload(sheetRows(csvParse(text.replace(/^\\uFEFF/,''))));$('uploadSheet').innerHTML='<option>CSV</option>';return}}else{if(!window.XLSX)throw Error('엑셀 읽기 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인하거나 CSV로 저장해 주세요.');uploadBook=XLSX.read(await file.arrayBuffer(),{type:'array',cellDates:true})}
+$('uploadSheet').replaceChildren();for(const name of uploadBook.SheetNames){const o=document.createElement('option');o.value=name;o.textContent=name;$('uploadSheet').append(o)}$('uploadSheet').disabled=uploadBook.SheetNames.length<=1;loadUploadSheet()}catch(e){uploadMsg('파일을 읽지 못했습니다: '+e.message,true);$('drawUpload').disabled=true}}
+$('uploadFile').addEventListener('change',()=>loadUploadFile($('uploadFile').files[0]));
 function loadUploadSheet(){const name=$('uploadSheet').value;const ws=uploadBook?.Sheets[name];if(!ws)return;const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});setupUpload(sheetRows(rows))}
 $('uploadSheet').onchange=loadUploadSheet;
 function parseUploadPrice(v){if(typeof v==='number')return Number.isFinite(v)?v:null;let t=String(v??'').trim().replace(/,/g,'').replace(/\\s/g,'');if(!t||t==='-'||t==='—')return null;const n=Number(t.replace(/[^0-9.+-]/g,''));return Number.isFinite(n)?n:null}
@@ -152,10 +154,25 @@ async function loadPrivateFiles(){
    tr.insertCell().textContent=file.uploaded?new Date(file.uploaded).toLocaleString('ko-KR'):'-';
    const actions=tr.insertCell();
    const down=document.createElement('button');down.textContent='다운로드';down.onclick=()=>downloadPrivateFile(file.id,file.name);actions.append(down);
+   const open=document.createElement('button');open.textContent='차트로 열기';open.style.marginLeft='8px';open.onclick=()=>openPrivateChart(file.id,file.name||file.id);actions.append(open);
    const del=document.createElement('button');del.textContent='삭제';del.style.marginLeft='8px';del.onclick=()=>deletePrivateFile(file.id,file.name);actions.append(del);
   }
   privateStatus('파일 '+(data.files||[]).length+'개를 확인했습니다.');
  }catch(e){privateStatus('목록 조회 실패: '+e.message,true)}
+}
+async function openPrivateChart(id,name){
+ try{
+  privateStatus('클라우드 파일을 차트로 불러오는 중…');
+  const res=await fetch(PRIVATE_API+'/api/private/files/'+encodeURIComponent(id),{credentials:'include'});
+  if(!res.ok)throw Error('파일 읽기 실패 (HTTP '+res.status+')');
+  const blob=await res.blob();
+  const file=new File([blob],name||'cloud.xlsx',{type:blob.type||'application/octet-stream'});
+  // R2의 과거 파일 목록은 이름 대신 UUID를 반환할 수 있으므로 확장자가 없는 파일도 내용으로 판독합니다.
+  await loadUploadFile(file);
+  $('savedChartName').value=name||'클라우드 차트';
+  showTab(3);
+  privateStatus('파일을 차트 설정 화면으로 불러왔습니다. 시트와 열을 확인하세요.');
+ }catch(e){privateStatus('차트 불러오기 실패: '+e.message,true)}
 }
 async function downloadPrivateFile(id,name){
  try{
